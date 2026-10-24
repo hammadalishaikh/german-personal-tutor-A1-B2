@@ -2,6 +2,9 @@
 .streamlit/secrets.toml
 .env
 
+# Your learning data and local Gemini key (local mode) stay on your computer
+data/
+
 __pycache__/
 *.pyc
 .venv/

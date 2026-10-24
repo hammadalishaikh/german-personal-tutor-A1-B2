@@ -9,14 +9,13 @@ import streamlit as st
 from gtts import gTTS
 from openai import (APIConnectionError, InternalServerError, NotFoundError, OpenAI,
                     PermissionDeniedError, RateLimitError)
-from supabase import Client, create_client
-
 from grammar_tables import render_grammar_tables
+from storage import LocalStore
 
 
 # ============================================================
 # GERMAN MASTER COACH — free, open-source German coach (A1 → B2)
-# Streamlit + Gemini + Supabase
+# Streamlit + Gemini, data saved locally (data/ folder) or in Supabase
 # ============================================================
 #
 # Features:
@@ -25,20 +24,24 @@ from grammar_tables import render_grammar_tables
 # - A1/A2: all explanations, instructions and feedback in English
 #   (German examples with translations). B1: German with English hints.
 #   B2: German only.
-# - Lessons, exercises and grading by Gemini; automatic promotion when
-#   8+ exercises in a stage average 85%+.
+# - Lessons, exercises and grading by Gemini; automatic promotion by your
+#   chosen rule: a percentage, or the Goethe standard (60% in each of
+#   Reading, Listening, Writing and Speaking).
+# - Two ways to run it: LOCAL (data in the data/ folder on your computer,
+#   only reachable from your computer) or CLOUD (Supabase + Streamlit Cloud).
 # - Study Hub: week-by-week plan, grammar checklist per level, Gemini
 #   vocabulary lists with a daily vocab check, grammar reference tables.
 #
-# Setup: see README.md (accounts, API keys, Supabase schema, deployment).
-#
-# Streamlit secrets (.streamlit/secrets.toml or Streamlit Cloud → Secrets):
-#   GEMINI_API_KEY = "..."
-#   SUPABASE_URL   = "https://xxxx.supabase.co"
-#   SUPABASE_KEY   = "..."        # Supabase secret key (service_role)
-#   APP_PASSWORD   = "..."        # optional, recommended for public URLs
-#   GEMINI_MODEL   = "gemini-3.8-flash"   # optional
-#   LEARNER_ID     = "me"         # optional
+# Setup: see README.md.
+#   Local: run start_local.bat (Windows) or start_local.sh (Mac/Linux) and
+#          paste your Gemini key once. Nothing else needed.
+#   Cloud: Streamlit secrets (Streamlit Cloud → Settings → Secrets):
+#     GEMINI_API_KEY = "..."
+#     SUPABASE_URL   = "https://xxxx.supabase.co"   # cloud mode only
+#     SUPABASE_KEY   = "..."        # Supabase secret key (service_role)
+#     APP_PASSWORD   = "..."        # optional, recommended for public URLs
+#     GEMINI_MODEL   = "gemini-3.8-flash"   # optional
+#     LEARNER_ID     = "me"         # optional
 # ============================================================
 
 
@@ -52,12 +55,34 @@ st.set_page_config(
 # -----------------------------
 # Configuration
 # -----------------------------
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
-LEARNER_ID = st.secrets.get("LEARNER_ID", "me")
-APP_PASSWORD = str(st.secrets.get("APP_PASSWORD", "") or "")
+from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+LOCAL_SETTINGS = APP_DIR / "data" / "settings.json"
+
+
+def setting(name: str, default: str = "") -> str:
+    """Streamlit secrets first, then (local mode) data/settings.json."""
+    try:
+        value = st.secrets.get(name)
+        if value:
+            return str(value)
+    except Exception:  # no secrets file at all: fine in local mode
+        pass
+    try:
+        return str(json.loads(LOCAL_SETTINGS.read_text(encoding="utf-8")).get(name) or default)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+GEMINI_API_KEY = setting("GEMINI_API_KEY")
+SUPABASE_URL = setting("SUPABASE_URL")
+SUPABASE_KEY = setting("SUPABASE_KEY")
+GEMINI_MODEL = setting("GEMINI_MODEL", "gemini-3.8-flash")
+LEARNER_ID = setting("LEARNER_ID", "me")
+APP_PASSWORD = setting("APP_PASSWORD")
+# "cloud" when Supabase is configured, otherwise "local" (data/ folder on this computer).
+STORAGE_MODE = setting("STORAGE", "cloud" if (SUPABASE_URL and SUPABASE_KEY) else "local").lower()
 
 # Models shown in the sidebar (IDs from the Gemini API model list).
 MODEL_OPTIONS = {
@@ -71,16 +96,38 @@ MODEL_OPTIONS = {
 FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 # Optional custom model ID from Streamlit Secrets.
-CUSTOM_GEMINI_MODEL = st.secrets.get("CUSTOM_GEMINI_MODEL", "").strip()
+CUSTOM_GEMINI_MODEL = setting("CUSTOM_GEMINI_MODEL").strip()
 if CUSTOM_GEMINI_MODEL and CUSTOM_GEMINI_MODEL not in MODEL_OPTIONS.values():
     MODEL_OPTIONS[f"Custom — {CUSTOM_GEMINI_MODEL}"] = CUSTOM_GEMINI_MODEL
 
 if not GEMINI_API_KEY:
-    st.error("Missing GEMINI_API_KEY in your Streamlit secrets. See README.md → Step 2.")
+    if STORAGE_MODE == "local":
+        # First start on this computer: ask for the key once and keep it in data/settings.json.
+        st.title("🇩🇪 German Personal Tutor: first-time setup")
+        st.write(
+            "The coach uses Google's **Gemini** AI. Get a free API key at "
+            "[aistudio.google.com](https://aistudio.google.com) → **Get API key** → **Create API key**, "
+            "then paste it here. It is saved only on this computer (in `data/settings.json`)."
+        )
+        new_key = st.text_input("Gemini API key", type="password")
+        if st.button("Save and start", type="primary", disabled=not new_key.strip()):
+            LOCAL_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+            current = {}
+            if LOCAL_SETTINGS.exists():
+                try:
+                    current = json.loads(LOCAL_SETTINGS.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    current = {}
+            current["GEMINI_API_KEY"] = new_key.strip()
+            LOCAL_SETTINGS.write_text(json.dumps(current, indent=1), encoding="utf-8")
+            st.rerun()
+        st.stop()
+    st.error("Missing GEMINI_API_KEY in your Streamlit secrets. See README.md → Cloud setup, Step 2.")
     st.stop()
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Missing SUPABASE_URL or SUPABASE_KEY in your Streamlit secrets. See README.md → Step 3.")
+if STORAGE_MODE == "cloud" and (not SUPABASE_URL or not SUPABASE_KEY):
+    st.error("Cloud mode needs SUPABASE_URL and SUPABASE_KEY in your Streamlit secrets. "
+             "See README.md → Cloud setup, Step 3. (Or remove STORAGE = \"cloud\" to run locally.)")
     st.stop()
 
 # Optional password: keeps strangers from using your app (and your Gemini quota).
@@ -101,7 +148,13 @@ if APP_PASSWORD and not st.session_state.get("app_unlocked"):
 # Clients
 # -----------------------------
 @st.cache_resource
-def get_supabase() -> Client:
+def get_supabase():
+    """The database: Supabase in cloud mode, JSON files in data/ in local mode.
+    Both offer the same table().select()/insert()/upsert()/delete() calls."""
+    if STORAGE_MODE == "local":
+        return LocalStore(APP_DIR / "data")
+    from supabase import create_client
+
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -117,10 +170,11 @@ def get_llm() -> OpenAI:
 supabase = get_supabase()
 llm = get_llm()
 
-# Fail early with a clear message if Supabase is unreachable
+# Cloud mode: fail early with a clear message if Supabase is unreachable
 # (e.g. free-tier project paused, or wrong SUPABASE_URL).
 try:
-    supabase.table("learner_progress").select("learner_id").limit(1).execute()
+    if STORAGE_MODE == "cloud":
+        supabase.table("learner_progress").select("learner_id").limit(1).execute()
 except Exception as exc:
     st.error(
         "Cannot connect to Supabase. If you are on the free tier, your project "
@@ -1257,15 +1311,69 @@ def compute_skill_score(
     return pct(weighted / sum(weights))
 
 
+# -----------------------------
+# Passing rule: a percentage you choose, or the Goethe-Zertifikat standard
+# -----------------------------
+# Goethe-Zertifikat: pass = 60% or more in each exam module (Lesen, Hören,
+# Schreiben, Sprechen). Grammar/vocabulary exercises still count as practice.
+GOETHE_MODULES = {"Reading": "Lesen", "Listening": "Hören", "Writing": "Schreiben", "Speaking": "Sprechen"}
+GOETHE_PASS = 60
+GOETHE_MIN_PER_MODULE = 3
+PERCENT_CHOICES = [60, 65, 70, 75, 80, 85, 90]
+PASS_MODE_LABELS = {
+    "percentage": "Percentage (you choose the pass mark)",
+    "goethe": "Goethe exam standard (60% in each exam skill)",
+}
+
+
+def pass_rule() -> Tuple[str, int]:
+    """('percentage' | 'goethe', percent). Stored in the Study Hub state."""
+    rule = hub_load().get("pass_rule") or {}
+    mode = rule.get("mode") if rule.get("mode") in PASS_MODE_LABELS else "percentage"
+    percent = safe_int(rule.get("percent"), 85)
+    return mode, (percent if percent in PERCENT_CHOICES else 85)
+
+
+def pass_mark() -> int:
+    mode, percent = pass_rule()
+    return GOETHE_PASS if mode == "goethe" else percent
+
+
+def pass_rule_text() -> str:
+    mode, percent = pass_rule()
+    if mode == "goethe":
+        return (f"Goethe standard: {GOETHE_PASS}%+ in each of Lesen, Hören, Schreiben and Sprechen "
+                f"({GOETHE_MIN_PER_MODULE}+ exercises each)")
+    return f"8+ exercises with an average of {percent}%+"
+
+
+def goethe_module_scores(stage_attempts: List[Dict[str, Any]]) -> Dict[str, Tuple[int, Optional[int]]]:
+    """skill -> (exercises in this stage, average of the last 5)."""
+    out: Dict[str, Tuple[int, Optional[int]]] = {}
+    for skill in GOETHE_MODULES:
+        scores = [safe_int(a.get("score")) for a in stage_attempts if a.get("exercise_type") == skill]
+        recent = scores[:5]  # newest first
+        out[skill] = (len(scores), round(sum(recent) / len(recent)) if recent else None)
+    return out
+
+
+def goethe_ready(stage_attempts: List[Dict[str, Any]]) -> bool:
+    return all(n >= GOETHE_MIN_PER_MODULE and avg is not None and avg >= GOETHE_PASS
+               for n, avg in goethe_module_scores(stage_attempts).values())
+
+
 def assess_stage_readiness(
     stage_attempts: List[Dict[str, Any]],
 ) -> Tuple[int, str]:
     """
     Decide whether the learner should stay, review, promote, or downgrade.
 
+    Thresholds follow the chosen pass mark P: an answer below P counts as
+    incorrect, below P-25 as a hard fail, below P-15 as weak. (With the
+    default P = 85 these are 60 and 70, as before.)
     Downgrade is deliberately based on BOTH score and the saved `correct`
     flag. This makes the system robust when the grader gives a partial score
-    such as 60-70 to an answer that is still considered incorrect.
+    to an answer that is still considered incorrect.
     """
     if not stage_attempts:
         return 0, "No evidence yet."
@@ -1275,51 +1383,58 @@ def assess_stage_readiness(
     if not scores:
         return 0, "No scored attempts yet."
 
+    mode, _ = pass_rule()
+    p = pass_mark()
+    low, weak = p - 25, p - 15
+
     recent_avg = round(sum(scores) / len(scores))
     incorrect_count = sum(
         1
         for a in recent
-        if not bool(a.get("correct")) or safe_int(a.get("score")) < 85
+        if not bool(a.get("correct")) or safe_int(a.get("score")) < p
     )
     hard_fail_count = sum(
         1
         for a in recent
-        if not bool(a.get("correct")) or safe_int(a.get("score")) < 60
+        if not bool(a.get("correct")) or safe_int(a.get("score")) < low
     )
 
     consecutive_low = 0
     for score in scores:
-        if score < 60:
+        if score < low:
             consecutive_low += 1
         else:
             break
 
-    consecutive_below_70 = 0
+    consecutive_weak = 0
     for score in scores:
-        if score < 70:
-            consecutive_below_70 += 1
+        if score < weak:
+            consecutive_weak += 1
         else:
             break
 
     # Fewer than 8 attempts: do not downgrade yet.
     if len(stage_attempts) < 8:
-        if len(recent) >= 4 and (recent_avg < 60 or hard_fail_count >= 3):
+        if len(recent) >= 4 and (recent_avg < low or hard_fail_count >= 3):
             return recent_avg, "At risk — collect more evidence before downgrade."
         return recent_avg, "Continue current stage."
 
     # 8+ attempts: persistent weakness can now trigger a downgrade.
     if (
         incorrect_count >= 6
-        or recent_avg < 60
-        or (recent_avg < 70 and consecutive_low >= 3)
+        or recent_avg < low
+        or (recent_avg < weak and consecutive_low >= 3)
     ):
         return recent_avg, "Downgrade recommended."
 
     # Borderline performance: keep the stage but force more review.
-    if recent_avg < 70 or incorrect_count >= 4 or consecutive_below_70 >= 4:
+    if recent_avg < weak or incorrect_count >= 4 or consecutive_weak >= 4:
         return recent_avg, "Needs intensive review."
 
-    if recent_avg >= 85 and incorrect_count <= 1:
+    if mode == "goethe":
+        if goethe_ready(stage_attempts):
+            return recent_avg, "Ready for promotion."
+    elif recent_avg >= p and incorrect_count <= 1:
         return recent_avg, "Ready for promotion."
 
     return recent_avg, "Continue current stage."
@@ -1432,6 +1547,11 @@ def can_advance_stage(progress: Dict[str, Any]) -> bool:
     stage = safe_int(progress.get("current_stage"), 1)
     stage_attempts = [a for a in attempts if safe_int(a.get("stage")) == stage]
 
+    mode, percent = pass_rule()
+    if mode == "goethe":
+        # Like the Goethe-Zertifikat: every exam skill must pass on its own.
+        return goethe_ready(stage_attempts)
+
     # Only structured exercise attempts can unlock a promotion.
     if len(stage_attempts) < 8:
         return False
@@ -1439,7 +1559,7 @@ def can_advance_stage(progress: Dict[str, Any]) -> bool:
     scores = [safe_int(a.get("score")) for a in stage_attempts[:20]]
     mastery = pct(sum(scores) / len(scores)) if scores else 0
 
-    return mastery >= 85
+    return mastery >= percent
 
 
 def advance_stage_if_ready() -> Tuple[Dict[str, Any], bool, str]:
@@ -1489,8 +1609,8 @@ def reset_lesson_state() -> None:
 def set_stage_manually(new_stage: int) -> None:
     """Let the learner choose their own level (e.g. after a placement test).
 
-    The normal promotion/downgrade rules keep running from the chosen stage:
-    8+ exercises at >=85% average unlocks the next stage automatically.
+    The normal promotion/downgrade rules keep running from the chosen stage,
+    using the learner's passing rule (percentage or Goethe standard).
     """
     new_stage = max(1, min(new_stage, len(CURRICULUM)))
     progress = load_progress()
@@ -1514,7 +1634,7 @@ def set_stage_manually(new_stage: int) -> None:
 
     st.session_state["unlock_message"] = (
         f"🎚️ Level set to **Stage {new_stage}: {stage['level']} — {stage['title']}**. "
-        f"Score 85%+ on average over 8+ exercises here and you will be moved up automatically."
+        f"You move up automatically once you reach your passing rule: {pass_rule_text()}."
     )
 
 
@@ -1932,8 +2052,8 @@ Rules:
     else:
         model_correct = False
 
-    # A very high score is treated as correct even if the model omitted the flag.
-    result["correct"] = model_correct or result["score"] >= 85
+    # A score at or above the pass mark counts as correct even if the model omitted the flag.
+    result["correct"] = model_correct or result["score"] >= pass_mark()
 
     # Which syllabus point this exercise counts for: the grader's pick, else
     # the point the exercise was generated for.
@@ -2246,12 +2366,45 @@ if chosen_stage != stage_no:
         set_stage_manually(chosen_stage)
         st.rerun()
 
-evidence_count, evidence_avg = get_promotion_evidence(stage_no)
-if stage_no < len(CURRICULUM):
-    st.sidebar.caption(
-        f"🚀 Jump to Stage {stage_no + 1}: {min(evidence_count, 8)}/8 exercises, "
-        f"average {evidence_avg}% (need 85%)"
+# Passing rule: percentage or Goethe standard (saved with the Study Hub state)
+st.sidebar.markdown("### 🎯 Passing rule")
+current_mode, current_percent = pass_rule()
+chosen_mode = st.sidebar.radio(
+    "How do you pass a level?", list(PASS_MODE_LABELS), format_func=PASS_MODE_LABELS.get,
+    index=list(PASS_MODE_LABELS).index(current_mode), key="pass_mode",
+)
+chosen_percent = current_percent
+if chosen_mode == "percentage":
+    chosen_percent = st.sidebar.select_slider(
+        "Pass mark", PERCENT_CHOICES, value=current_percent, format_func=lambda p: f"{p}%", key="pass_percent",
+        help="Average score you need over your last 8–20 exercises in this stage.",
     )
+else:
+    st.sidebar.caption(
+        "Like the real Goethe-Zertifikat: you need 60%+ in **each** exam skill (Lesen, Hören, Schreiben, "
+        "Sprechen). A strong skill can't make up for a weak one."
+    )
+if (chosen_mode, chosen_percent) != (current_mode, current_percent):
+    hub_state = hub_load()
+    hub_state["pass_rule"] = {"mode": chosen_mode, "percent": chosen_percent}
+    hub_save(hub_state)
+    st.rerun()
+
+if stage_no < len(CURRICULUM):
+    if chosen_mode == "goethe":
+        stage_attempts_now = [a for a in get_recent_attempts(300) if safe_int(a.get("stage")) == stage_no]
+        lines_ = []
+        for skill, (n, avg) in goethe_module_scores(stage_attempts_now).items():
+            ok = n >= GOETHE_MIN_PER_MODULE and avg is not None and avg >= GOETHE_PASS
+            shown = f"{avg}%" if avg is not None else "—"
+            lines_.append(f"{'✅' if ok else '⬜'} {GOETHE_MODULES[skill]}: {shown} ({min(n, GOETHE_MIN_PER_MODULE)}/{GOETHE_MIN_PER_MODULE})")
+        st.sidebar.caption(f"🚀 Jump to Stage {stage_no + 1}:  \n" + "  \n".join(lines_))
+    else:
+        evidence_count, evidence_avg = get_promotion_evidence(stage_no)
+        st.sidebar.caption(
+            f"🚀 Jump to Stage {stage_no + 1}: {min(evidence_count, 8)}/8 exercises, "
+            f"average {evidence_avg}% (need {chosen_percent}%)"
+        )
 
 if "Downgraded" in str(progress.get("status", "")):
     st.sidebar.warning(
@@ -2572,9 +2725,9 @@ if result:
     st.caption("✅ This exercise has been recorded. Generate next exercise for a new task.")
     score = safe_int(result.get("score"))
 
-    if score >= 85:
+    if score >= pass_mark():
         st.success(f"✅ {score}/100 — Passed")
-    elif score >= 70:
+    elif score >= pass_mark() - 15:
         st.warning(f"🟠 {score}/100 — Good, but review needed")
     else:
         st.error(f"🔴 {score}/100 — Needs more practice")
@@ -2858,7 +3011,7 @@ def hub_build_plan(start: date) -> List[Dict[str, Any]]:
                     "kind": "CHECK", "skill": None, "topic": None,
                     "title": (f"Level check: ready for Stage {item['stage'] + 1}?"
                               if item["stage"] < len(CURRICULUM) else "Final check: full mock exam"),
-                    "sub": "8+ exercises in this stage with an 85%+ average moves you up.",
+                    "sub": f"You move up with: {pass_rule_text()}.",
                 })
             for k, sess in enumerate(sessions):
                 sess["id"] = f"w{week_no}-{k}-{sess['kind']}-{normalize_answer(sess['topic'] or sess['title'])}"
@@ -2969,6 +3122,15 @@ hub_level_rows = hub_stage_rows(attempts, stage_no)
 hub_level_mastered = sum(1 for r in hub_level_rows if r["status"] == "mastered")
 hub_promo_scores = [safe_int(a.get("score")) for a in attempts if safe_int(a.get("stage")) == stage_no][:20]
 hub_promo_avg = round(sum(hub_promo_scores) / len(hub_promo_scores)) if hub_promo_scores else 0
+if pass_rule()[0] == "goethe":
+    hub_modules = goethe_module_scores([a for a in attempts if safe_int(a.get("stage")) == stage_no])
+    hub_passed = sum(1 for n, avg in hub_modules.values()
+                     if n >= GOETHE_MIN_PER_MODULE and avg is not None and avg >= GOETHE_PASS)
+    hub_promo_html = (f'<div class="hub-stat"><b>{hub_passed}/4 skills</b>'
+                      f'<span>at {GOETHE_PASS}%+ (Goethe standard)</span></div>')
+else:
+    hub_promo_html = (f'<div class="hub-stat"><b>{min(len(hub_promo_scores), 8)}/8 · {hub_promo_avg}%</b>'
+                      f'<span>toward next level (need {pass_mark()}%)</span></div>')
 hub_next = next(
     (s for w in hub_plan if w["end"] >= hub_today for s in w["sessions"] if s["id"] not in hub_done),
     None,
@@ -2983,8 +3145,7 @@ st.markdown(
     '<span>sessions done</span></div>'
     f'<div class="hub-stat"><b>{hub_level_mastered}/{len(hub_level_rows)}</b>'
     f'<span>topics mastered in Stage {stage_no}</span></div>'
-    f'<div class="hub-stat"><b>{min(len(hub_promo_scores), 8)}/8 · {hub_promo_avg}%</b>'
-    '<span>toward next level (need 85%)</span></div>'
+    + hub_promo_html +
     f'<div class="hub-stat"><b class="text">{hub_next_label}</b><span>next open session</span></div>'
     '</div>',
     unsafe_allow_html=True,
