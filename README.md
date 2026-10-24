@@ -1,6 +1,6 @@
 # 🇩🇪 German Personal Tutor (A1 → B2)
 
-A free, open-source German coach. It teaches you from **complete beginner (A1) to upper-intermediate (B2)**,
+A free German coach for personal, non-commercial use. It teaches you from **complete beginner (A1) to upper-intermediate (B2)**,
 with lessons, exercises and grading by Google's Gemini AI.
 
 Run it **on your own laptop**, where all your data stays on your hard drive, or **in the cloud**, where you can use it from any device.
@@ -160,5 +160,12 @@ Switching from laptop to cloud later starts a fresh database; your local `data` 
 - Google's free Gemini tier may use prompts to improve its products. Check Google's current terms.
 
 ## License
-[GNU AGPL-3.0](LICENSE). You can use, study, change and share this app for free. If you run a
-modified version as a service for others, you must publish your changes under the same license.
+[PolyForm Noncommercial License 1.0.0](LICENSE). Copyright © 2026 Sheikh Hammad Ali.
+
+- ✅ **Allowed, for free:** using it to learn German, personal study, changing it for yourself, sharing it
+  with others (with the license), and use by schools, charities, research and public institutions.
+- ❌ **Not allowed:** any commercial use. That includes selling it, offering it as a paid service, or using
+  it in a company's product or business.
+
+Want to use it commercially? Contact me through [GitHub](https://github.com/hammadalishaikh) about a
+commercial license.

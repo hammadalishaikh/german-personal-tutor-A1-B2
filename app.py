@@ -14,7 +14,8 @@ from storage import LocalStore
 
 
 # ============================================================
-# GERMAN MASTER COACH — free, open-source German coach (A1 → B2)
+# GERMAN MASTER COACH — free German coach (A1 → B2) for non-commercial use
+# License: PolyForm Noncommercial 1.0.0 (see LICENSE)
 # Streamlit + Gemini, data saved locally (data/ folder) or in Supabase
 # ============================================================
 #

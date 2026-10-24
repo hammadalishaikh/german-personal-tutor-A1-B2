@@ -1,0 +1,4 @@
+# Keep start scripts runnable after download on every system
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.mp4 binary
